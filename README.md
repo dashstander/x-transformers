@@ -310,6 +310,25 @@ model = TransformerWrapper(
 )
 ```
 
+The <a href="https://ai.googleblog.com/2022/04/pathways-language-model-palm-scaling-to.html">PaLM</a> language model also reported even better results than GEGLU using the Swish GLU variant. You can turn this on by setting two flags
+
+```python
+import torch
+from x_transformers import TransformerWrapper, Decoder, Encoder
+
+model = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    attn_layers = Decoder(
+        dim = 512,
+        depth = 6,
+        heads = 8,
+        ff_swish = True, # set this to True
+        ff_glu = True    # set to true to use for all feedforwards
+    )
+)
+``````
+
 ### ReLU²
 
 https://arxiv.org/abs/2109.08668
@@ -328,32 +347,6 @@ model = TransformerWrapper(
         depth = 6,
         heads = 8,
         ff_relu_squared = True
-    )
-)
-```
-
-### Rezero Is All You Need
-
-<img src="./images/rezero.png"></img>
-
-https://arxiv.org/abs/2003.04887
-
-This paper proposes to do away with normalization altogether, and instead gate the output of each branch with a single learned scalar, initialized at zero. They demonstrate convergence for very deep networks, convolution or attention, all without normalization.
-
-I have had good results on usual datasets, but had met trouble with convergence on large datasets (GPT3 sized datasets). However, enough researchers have told me they had positive experiences with this that I decided to include it. If you run into trouble, please use Scalenorm instead.
-
-```python
-import torch
-from x_transformers import TransformerWrapper, Decoder
-
-model = TransformerWrapper(
-    num_tokens = 20000,
-    max_seq_len = 1024,
-    attn_layers = Decoder(
-        dim = 512,
-        depth = 6,
-        heads = 8,
-        use_rezero = True # set to true to use for all layers
     )
 )
 ```
@@ -424,13 +417,11 @@ model = TransformerWrapper(
 )
 ```
 
-### Collaborative Attention
+### One Write-Head Is All You Need
 
-<img src="./images/collaborative-attention.png" width="500px"></img>
+https://arxiv.org/abs/1911.02150
 
-https://arxiv.org/abs/2006.16362
-
-Share redundent learned key/query projections accross heads. Collaborative attention reduces the number of parameters but requires slightly more memory and computation. A good compression factor to match the performance of the vanilla multi-head attention is between 0.25 and 0.5.
+Yet another Noam Shazeer paper (he's a legend) that proposes to only have one head for the key / values, but multi-headed queries. This paper was largely ignored for a while, but recently validated at scale in <a href="https://arxiv.org/abs/2203.07814">AlphaCode</a> as well as <a href="https://arxiv.org/abs/2204.02311">PaLM</a>. It has the property of being memory efficient when decoding extremely large language models. You can use it with one keyword argument as shown below.
 
 ```python
 import torch
@@ -443,8 +434,7 @@ model = TransformerWrapper(
         dim = 512,
         depth = 6,
         heads = 8,
-        attn_collab_heads = True,
-        attn_collab_compression = .3,
+        attn_one_kv_head = True
     )
 )
 ```
@@ -974,7 +964,7 @@ model(x)
 
 The last change is a layernorm right after the outwards projection in attention. This is actually identical to the sandwich norm proposed by the Coqview paper, so you can use this by simply setting `sandwich_norm = True`, although it would also add it to the feedforward layer.
 
-## Query-Key Normalization
+### Query-Key Normalization
 
 <img src="./images/cosine-sim-attention.png" width="400px"></img>
 
@@ -1001,6 +991,31 @@ model = TransformerWrapper(
         heads = 8,
         use_qk_norm_attn = True, # set this to True
         qk_norm_attn_seq_len = 1024 # set this to max_seq_len from above
+    )
+)
+
+x = torch.randint(0, 20000, (1, 1024))
+model(x)
+```
+
+### Turning off absolute positional embedding
+
+A number of papers have hinted that causal transformers (`Decoder`) can learn absolute positions in the absence of added embeddings of any sort. This was recently thoroughly investigated <a href="https://arxiv.org/abs/2203.16634">here</a>. You can turn off the absolute positional embedding by setting `use_abs_pos_emb = False` in the `TransformerWrapper`
+
+Given <a href="https://ai.googleblog.com/2022/04/pathways-language-model-palm-scaling-to.html">PaLM</a>, the trend going forward may be to forgo absolute positional embedding (again, for causal transformers only), and add relative positional embeddings with RoPE, ALiBi, etc.
+
+```python
+import torch
+from x_transformers import TransformerWrapper, Decoder
+
+model = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    use_abs_pos_emb = False,   # set this to False
+    attn_layers = Decoder(
+        dim = 512,
+        depth = 6,
+        heads = 8,
     )
 )
 
@@ -1139,15 +1154,6 @@ generated = model.generate(start_emb, 17) # (17, 777)
 ```
 
 ```bibtex
-@misc{bachlechner2020rezero,
-    title   = {ReZero is All You Need: Fast Convergence at Large Depth},
-    author  = {Thomas Bachlechner and Bodhisattwa Prasad Majumder and Huanru Henry Mao and Garrison W. Cottrell and Julian McAuley},
-    year    = {2020},
-    url     = {https://arxiv.org/abs/2003.04887}
-}
-```
-
-```bibtex
 @misc{bhojanapalli2020lowrank,
     title   = {Low-Rank Bottleneck in Multi-head Attention Models},
     author  = {Srinadh Bhojanapalli and Chulhee Yun and Ankit Singh Rawat and Sashank J. Reddi and Sanjiv Kumar},
@@ -1195,17 +1201,6 @@ generated = model.generate(start_emb, 17) # (17, 777)
     author  = {Noam Shazeer and Zhenzhong Lan and Youlong Cheng and Nan Ding and Le Hou},
     year    = {2020},
     eprint  = {2003.02436},
-    archivePrefix = {arXiv},
-    primaryClass = {cs.LG}
-}
-```
-
-```bibtex
-@misc{cordonnier2020multihead,
-    title   = {Multi-Head Attention: Collaborate Instead of Concatenate},
-    author  = {Jean-Baptiste Cordonnier and Andreas Loukas and Martin Jaggi},
-    year    = {2020},
-    eprint  = {2006.16362},
     archivePrefix = {arXiv},
     primaryClass = {cs.LG}
 }
@@ -1473,6 +1468,34 @@ generated = model.generate(start_emb, 17) # (17, 777)
     eprint  = {2111.09883},
     archivePrefix = {arXiv},
     primaryClass = {cs.CV}
+}
+```
+
+```bibtex
+@article{Haviv2022TransformerLM,
+    title   = {Transformer Language Models without Positional Encodings Still Learn Positional Information},
+    author  = {Adi Haviv and Ori Ram and Ofir Press and Peter Izsak and Omer Levy},
+    journal = {ArXiv},
+    year    = {2022},
+    volume  = {abs/2203.16634}
+}
+```
+
+```bibtex
+@article{chowdhery2022PaLM,
+    title   = {PaLM: Scaling Language Modeling with Pathways},
+    author  = {Chowdhery, Aakanksha et al},
+    year    = {2022}
+}
+```
+
+```bibtex
+@article{Shazeer2019FastTD,
+    title   = {Fast Transformer Decoding: One Write-Head is All You Need},
+    author  = {Noam M. Shazeer},
+    journal = {ArXiv},
+    year    = {2019},
+    volume  = {abs/1911.02150}
 }
 ```
 
